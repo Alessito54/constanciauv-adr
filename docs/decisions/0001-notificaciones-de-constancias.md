@@ -1,6 +1,6 @@
 ---
 status: "proposed"
-date: 2026-11-03
+date: 2026-11-03 # revisado el 2026-11-03 (Revisión 1)
 ---
 
 # Procesamiento asíncrono mediante eventos persistidos para notificar constancias
@@ -51,6 +51,7 @@ Las siguientes comprobaciones se proponen para una implementación futura; no ha
 * **Prevención de duplicados (RT4).** Prueba que solicite dos veces la notificación de la misma constancia y verifique que solo exista un registro, por restricción de unicidad sobre el identificador de la constancia. Prueba adicional que ejecute dos instancias del procesador en paralelo sobre el mismo registro y verifique una sola llamada efectiva al proveedor; y prueba en la que el proveedor responde tras un tiempo de espera agotado, verificando que el reintento no produzca un segundo envío confirmado.
 * **Revisión de diseño.** Revisión por pares de que ninguna ruta del código llame al proveedor fuera del componente procesador, y de que el registro de la notificación pendiente ocurra en el mismo límite transaccional que el almacenamiento de la constancia (si la constancia se guarda, el pendiente también; si no, ninguno).
 * **Observabilidad.** Verificar que existan métricas de pendientes por antigüedad y de reintentos fallidos, de modo que la acumulación silenciosa de pendientes sea detectable.
+* **Clasificación de errores del proveedor (añadida en la Revisión 1).** Prueba con un doble del proveedor que reproduzca su contrato de errores vigente —tanto los fallos transitorios como los permanentes y las respuestas ambiguas— verificando que el procesador reintente solo los transitorios, marque como fallo definitivo los permanentes y no genere un segundo envío ante una respuesta ambigua. Esta prueba debe ejecutarse contra el contrato del proveedor y volver a revisarse cada vez que ese contrato cambie.
 
 ## Pros and Cons of the Options
 
@@ -74,6 +75,7 @@ La aplicación registra la notificación pendiente junto con el almacenamiento d
 * Neutral, because la notificación se vuelve eventual: aceptable para un aviso de disponibilidad, pero debe quedar explícito ante los usuarios.
 * Bad, because añade un componente que hay que operar y supervisar; si se detiene, las constancias se siguen emitiendo pero nadie recibe aviso, y el fallo es silencioso.
 * Bad, because dificulta el diagnóstico de un solo caso, ya que el envío ya no ocurre en la misma traza de la solicitud del estudiante.
+* Bad, because la correcta clasificación de las respuestas del proveedor sigue siendo necesaria dentro del procesador: aislar la integración acota dónde se hace, pero no elimina la dependencia de la semántica de errores del proveedor (véase *Revisión 1*).
 
 ## More Information
 
@@ -81,3 +83,17 @@ La aplicación registra la notificación pendiente junto con el almacenamiento d
 * Plantilla utilizada: MADR 4.0.0 (`adr-template.md`), de Architectural Decision Records (adr.github.io).
 * Esta decisión se limita a la comunicación entre la emisión de constancias y el servicio externo de notificaciones. Quedan fuera de su alcance la validación de identidad institucional (R1), el formato y la firma del documento y el diseño del historial (R3).
 * Decisión pendiente de revisión: el estado `proposed` se mantendrá hasta que se valide con las comprobaciones descritas en *Confirmation*.
+
+### Revisión 1. Cambio en el proveedor de notificaciones
+
+**Cambio recibido.** El proveedor externo de notificaciones modificó su interfaz de comunicación y cambió la forma en que reporta los errores de envío. No cambiaron los requisitos ni las restricciones del caso: sigue siendo un servicio externo (RT1) que puede estar indisponible (RT2), los pendientes siguen debiendo conservarse (RT3) y la unicidad de la solicitud sigue sin poder presuponerse del proveedor (RT4).
+
+**Impacto sobre la alternativa seleccionada.** El cambio afecta únicamente al componente procesador de notificaciones pendientes, que es el único que se comunica con el proveedor: su cliente de integración y, sobre todo, la lógica que traduce la respuesta del proveedor a un resultado interno (enviado, fallo transitorio reintentable, fallo permanente). No afecta a la generación ni al almacenamiento de constancias (R2, R3), ni al registro de la notificación pendiente, ni al mecanismo de unicidad que previene duplicados, porque ninguno de ellos conoce al proveedor. El aislamiento previsto en la decisión permitió localizar el cambio: el radio de impacto es un componente y su traducción de errores, no la ruta de emisión.
+
+Sí aparece un impacto real sobre el comportamiento: si la nueva forma de reportar errores clasifica como permanente algo que antes era transitorio (o al revés), el procesador podría dejar de reintentar envíos recuperables —poniendo en riesgo RT3— o reintentar envíos que el proveedor ya aceptó —poniendo en riesgo RT4 si la respuesta es ambigua. Es decir, el cambio no invalida la estructura, pero invalida supuestos de la lógica de reintento.
+
+**Estado de la decisión.** La decisión se mantiene. El cambio confirma el driver D2 en lugar de contradecirlo: precisamente porque la integración está concentrada en un componente, un cambio de interfaz externa se resuelve en un punto conocido y sin tocar la emisión de constancias. La justificación original no se modifica; lo que se agrega es la información nueva de que la semántica de errores del proveedor es un punto de variación que debe tratarse como contrato explícito y versionable, y no como un detalle del cliente. Si en el futuro el proveedor cambiara su modelo de entrega de forma que ya no fuera posible distinguir envíos confirmados de ambiguos, la prevención de duplicados dentro de ConstanciaUV tendría que reevaluarse; esa evaluación posterior queda registrada como pendiente, pero no es necesaria hoy.
+
+**Consecuencia que debe revisarse.** Se refuerza la consecuencia desfavorable sobre la dependencia de la semántica de errores del proveedor, añadida en *Consequences*: el aislamiento acota el lugar del cambio, no su necesidad, y cada cambio de contrato externo implica trabajo de mantenimiento en el procesador.
+
+**Comprobación que debe actualizarse.** Se incorpora en *Confirmation* la prueba de clasificación de errores del proveedor, y se actualiza la comprobación de prevención de duplicados (RT4) para incluir explícitamente el escenario de respuesta ambigua bajo el nuevo contrato de errores. Ambas se describen como pruebas a realizar en una implementación futura; no se han ejecutado.
